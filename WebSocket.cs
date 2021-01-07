@@ -11,7 +11,10 @@ namespace Birko.WebSocket
     public class WebSocket
     {
         private static IDictionary<string, TcpListener> _usedListeners = null;
+        private static IDictionary<string, bool> _isClientReady = null;
+
         private Queue<WebSocketClient> _clients = null;
+        private Queue<Thread> _threads = null;
         public IPAddress IP { get; }
         public int Port { get; }
 
@@ -20,6 +23,8 @@ namespace Birko.WebSocket
 
         public bool IsRunning { get; private set; } = false;
 
+        public string Key { get => $"{IP}:{Port}"; }
+
         public WebSocket(IPAddress ipAddress, int port = 80)
         {
             IP = ipAddress;
@@ -27,6 +32,14 @@ namespace Birko.WebSocket
             if (_usedListeners == null)
             {
                 _usedListeners = new Dictionary<string, TcpListener>();
+            }
+            if (_isClientReady == null)
+            {
+                _isClientReady = new Dictionary<string, bool>();
+            }
+            else if(_isClientReady.ContainsKey(Key) && !_isClientReady[Key])
+            {
+                throw new Exception($"WebSocket for {Key} is still running");
             }
         }
 
@@ -43,23 +56,33 @@ namespace Birko.WebSocket
                 OnStopped?.Invoke(null);
                 return;
             }
-            var key = $"{IP}:{Port}";
-            if (!_usedListeners.ContainsKey(key))
+            if (!_usedListeners.ContainsKey(Key))
             {
-                _usedListeners.Add(key, new TcpListener(IP, Port));
-                _usedListeners[key].Start();
+                _usedListeners.Add(Key, new TcpListener(IP, Port));
+                _usedListeners[Key].Start();
                 while (IsRunning)
                 {
                     Thread.Sleep(100);
-                    ThreadPool.QueueUserWorkItem(ThreadProc, _usedListeners[key]);
+                    if (!_isClientReady.ContainsKey(Key) || _isClientReady[Key])
+                    {
+                        _isClientReady[Key] = false;
+                        if (_threads == null)
+                        {
+                            _threads = new Queue<Thread>();
+                        }
+                        Thread t = new Thread(ThreadProc);
+                        _threads.Enqueue(t);
+                        t.Start(_usedListeners[Key]);
+                    }
                 }
-                _usedListeners[key].Stop();
+                _usedListeners[Key].Stop();
                 while (_clients?.Any() == true)
                 {
                     var c = _clients?.Dequeue();
                     c.Stop();
                 }
-                _usedListeners.Remove(key);
+                _usedListeners.Remove(Key);
+                _isClientReady.Remove(Key);
                 OnStopped?.Invoke(this);
             }
         }
@@ -84,6 +107,7 @@ namespace Birko.WebSocket
                     {
                         _clients = new Queue<WebSocketClient>();
                     }
+                    _isClientReady[Key] = true;
                     var wsclient = new WebSocketClient(client);
                     _clients.Enqueue(wsclient);
                     OnClient?.Invoke(wsclient);
